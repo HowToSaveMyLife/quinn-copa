@@ -169,6 +169,16 @@ impl RttEstimator {
         }
     }
 
+    /// returns the latest RTT measurement
+    pub fn latest(&self) -> Duration {
+        self.latest
+    }
+    
+    /// returns the smoothed RTT measurement
+    pub fn smoothed(&self) -> Duration {
+        self.get()
+    }
+
     /// The current best RTT estimation.
     pub fn get(&self) -> Duration {
         self.smoothed.unwrap_or(self.latest)
