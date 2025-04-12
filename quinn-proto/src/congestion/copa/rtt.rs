@@ -2,20 +2,20 @@ use std::time::{Duration, Instant};
 
 // The max RTT in the last 4 rounds.
 #[derive(Debug, Clone)]
-pub(super) struct RttMaxTracker{
+pub(crate) struct RttMaxTracker{
     rtt: [Duration; 4],
     idx: usize,
 }
 
 impl RttMaxTracker {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             rtt: [Duration::ZERO; 4],
             idx: 0,
         }
     }
 
-    pub(super) fn update(&mut self, rtt: Duration) {
+    pub(crate) fn update(&mut self, rtt: Duration) {
         // 更新当前索引
         self.idx = (self.idx + 1) % 4;
 
@@ -23,7 +23,7 @@ impl RttMaxTracker {
         self.rtt[self.idx] = rtt;
     }
 
-    pub(super) fn max_rtt(&self) -> Duration {
+    pub(crate) fn max_rtt(&self) -> Duration {
         self.rtt.iter().copied().max().unwrap_or(Duration::ZERO)
     }
     
@@ -38,18 +38,18 @@ struct RttTracker {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct RttMinTracker {
+pub(crate) struct RttMinTracker {
     rtt: Vec<RttTracker>,
 }
 
 impl RttMinTracker {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             rtt: Vec::new(),
         }
     }
 
-    pub(super) fn update(&mut self, rtt: Duration, now: Instant, window: Duration) {
+    pub(crate) fn update(&mut self, rtt: Duration, now: Instant, window: Duration) {
         // 清理过期的RTT
         self.rtt.retain(|tracker| now.duration_since(tracker.time) < window);
 
@@ -60,7 +60,7 @@ impl RttMinTracker {
         });
     }
 
-    pub(super) fn min_rtt(&self) -> Duration {
+    pub(crate) fn min_rtt(&self) -> Duration {
         // 返回最小RTT
         self.rtt.iter().map(|tracker| tracker.rtt).min().unwrap_or(Duration::MAX)
     }
@@ -68,14 +68,14 @@ impl RttMinTracker {
 
 // 基于时间桶的实现
 #[derive(Debug, Clone)]
-pub(super) struct BucketRttMinTracker {
+pub(crate) struct BucketRttMinTracker {
     buckets: [Duration; 100],  // 100个桶,每个桶表示100ms
     current_bucket: usize,
     last_update: Instant,
 }
 
 impl BucketRttMinTracker {
-    pub(super) fn new(now: Instant) -> Self {
+    pub(crate) fn new(now: Instant) -> Self {
         Self {
             buckets: [Duration::MAX; 100],
             current_bucket: 0,
@@ -83,7 +83,7 @@ impl BucketRttMinTracker {
         }
     }
 
-    pub(super) fn update(&mut self, rtt: Duration, now: Instant) {
+    pub(crate) fn update(&mut self, rtt: Duration, now: Instant) {
         // 计算经过的时间桶数
         let elapsed = now.duration_since(self.last_update).as_millis() as usize / 100;
         
@@ -102,7 +102,7 @@ impl BucketRttMinTracker {
         self.buckets[self.current_bucket] = self.buckets[self.current_bucket].min(rtt);
     }
 
-    pub(super) fn min_rtt(&self) -> Duration {
+    pub(crate) fn min_rtt(&self) -> Duration {
         self.buckets.iter().min().copied().unwrap_or(Duration::MAX)
     }
 }

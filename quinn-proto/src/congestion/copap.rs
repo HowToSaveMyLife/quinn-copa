@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::ops::Sub;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -6,8 +7,6 @@ use super::{Controller, ControllerFactory, BASE_DATAGRAM_SIZE};
 use crate::connection::RttEstimator;
 
 use crate::congestion::copa::rtt::{BucketRttMinTracker, RttMaxTracker, RttMinTracker};
-
-pub mod rtt;
 
 /// Delta: determines how much to weigh delay compared to throughput.
 pub const COPA_DELTA: f64 = 0.04;
@@ -91,9 +90,9 @@ impl Default for Velocity {
 
 /// Copa congestion controller
 #[derive(Debug, Clone)]
-pub struct Copa {
+pub struct Copap {
     /// Config
-    config: Arc<CopaConfig>,
+    config: Arc<CopapConfig>,
 
     /// The time origin point when Copa init, used for window filter updating.
     init_time: Instant,
@@ -124,15 +123,28 @@ pub struct Copa {
 
     queueing_delay: Duration,
 
+    pre_queueing_delay: Duration,
+    direction: bool,
+    pre_direction: bool,
+    cnt: u64,
+    near_empty: bool,
+
+    theta: f64,
+    theta_empty: f64,
+    beta: f64,
+
+    T_empty: Instant,
+
+
     rtt_max: RttMaxTracker,
     /// The max RTT in the last 4 rounds.
     rtt_min: BucketRttMinTracker,
     rtt_standing: RttMinTracker,
 }
 
-impl Copa {
+impl Copap {
     /// Construct a state using the given `config` and current time `now`
-    pub fn new(config: Arc<CopaConfig>, now: Instant, current_mtu: u16) -> Self {
+    pub fn new(config: Arc<CopapConfig>, now: Instant, current_mtu: u16) -> Self {
         let slow_start_delta = config.slow_start_delta;
         let initial_cwnd = config.initial_cwnd;
 
@@ -148,6 +160,15 @@ impl Copa {
             target_rate: 0,
             last_sent_pkt_num: 0,
             queueing_delay: Duration::ZERO,
+            pre_queueing_delay: Duration::ZERO,
+            direction: true,
+            pre_direction: true,
+            cnt: 0,
+            near_empty: false,
+            theta: 1.0,
+            theta_empty: 1.0,
+            beta: 0.75,
+            T_empty: Instant::now(),
             rtt_max: RttMaxTracker::new(),
             rtt_min: BucketRttMinTracker::new(Instant::now()),
             rtt_standing: RttMinTracker::new(),
@@ -172,68 +193,17 @@ impl Copa {
     }
 
     fn update_mode(&mut self) {
-        // Check if loss rate exceeds threshold when a new round starts. If so,
-        // We assume that Copa should switch to competitive mode, to competing with
-        // other buffer-filling flows.
         let loss_rate = self.queueing_delay.as_secs_f64()
             / (self.rtt_max.max_rtt().as_secs_f64() - self.rtt_min.min_rtt().as_secs_f64());
-        self.mode = if LOSS_RATE_THRESHOLD <= loss_rate {
-            CompetingMode::Competitive
-        } else {
-            CompetingMode::Default
-        };
 
-        match self.mode {
-            CompetingMode::Default => {
-                // self.delta = if self.slow_start {
-                //     self.config.slow_start_delta
-                // } else {
-                //     self.config.steady_delta
-                // };
-                self.delta = DEFAULT_DELTA;
-            }
-            CompetingMode::Competitive => {
-                self.delta = self.delta / (1 as f64 + self.delta);
-                self.delta = self.delta.min(0.5);
-            }
-        }
-    }
-
-    /// Update congestion window.
-    fn update_cwnd(&mut self) {
-        // Deal with the following cases:
-        // 1. slow_start, cwnd to increase: double cwnd
-        // 2. slow_start, cwnd to decrease: exiting slow_start and decrease cwnd
-        // 3. not slow_start, cwnd to increase: increase cwnd
-        // 4. not slow_start, cwnd to decrease: decrease cwnd
-
-        // Exit slow start once cwnd begins to decrease, i.e. rate reaches target rate.
-        if self.slow_start && !self.increase_cwnd {
-            self.slow_start = false;
-        }
-
-        if self.slow_start {
-            // Stay in slow start until the target rate is reached.
-            if self.increase_cwnd {
-                self.cwnd *= 2;
-            }
-        } else {
-            // Not in slow start. Adjust cwnd.
-            let cwnd_delta = (4.0 * (self.velocity.velocity as f64)
-                * self.config.max_datagram_size as f64
-                / (self.delta * (self.cwnd as f64))) as u64;
-
-            self.cwnd = if self.increase_cwnd {
-                self.cwnd.saturating_add(cwnd_delta)
-            } else {
-                self.cwnd.saturating_sub(cwnd_delta)
-            };
-
-            // set an appropriate value
-            if self.cwnd == 0 {
-                self.cwnd = self.config.min_cwnd;
-                self.velocity.velocity = 1;
-            }
+        if LOSS_RATE_THRESHOLD > loss_rate {
+            self.near_empty = true;
+            self.delta = DEFAULT_DELTA;
+            self.mode = CompetingMode::Default;
+        } else if self.cnt == 0 {
+            self.delta = self.delta / (1 as f64 + self.delta);
+            self.delta = self.delta.min(0.5);
+            self.mode = CompetingMode::Competitive;
         }
     }
 
@@ -304,9 +274,67 @@ impl Copa {
         self.velocity.last_cwnd = self.cwnd;
     }
 
+    fn update_theta(&mut self) {
+        if self.cnt >= 2 && self.velocity.velocity == 1 {
+            if self.near_empty {
+                self.theta_empty = self.theta;
+                self.theta *= self.beta;
+                self.T_empty = Instant::now();
+            } else {
+                //  K=std::pow(2.5*eTheta,1.0/3.0);
+                let temp = self.theta_empty * (1.0 - self.beta);
+                let k = temp.powf(1.0 / 3.0);
+                // T_K=std::pow((0.001*(cur_time-recordEmpty)-K),3);
+                // theta = 0.1 * T_K + eTheta;
+                self.theta = Instant::now().duration_since(self.T_empty).as_secs_f64().sub(k).powf(3.0) * 0.1 + self.theta_empty;
+            }
+            self.cnt = 0;
+            self.near_empty = false;
+        }
+    }
+
+
+    /// Update congestion window.
+    fn update_cwnd(&mut self) {
+        // Deal with the following cases:
+        // 1. slow_start, cwnd to increase: double cwnd
+        // 2. slow_start, cwnd to decrease: exiting slow_start and decrease cwnd
+        // 3. not slow_start, cwnd to increase: increase cwnd
+        // 4. not slow_start, cwnd to decrease: decrease cwnd
+
+        // Exit slow start once cwnd begins to decrease, i.e. rate reaches target rate.
+        if self.slow_start && !self.increase_cwnd {
+            self.slow_start = false;
+        }
+
+        if self.slow_start {
+            // Stay in slow start until the target rate is reached.
+            if self.increase_cwnd {
+                self.cwnd *= 2;
+            }
+        } else {
+            // Not in slow start. Adjust cwnd.
+            let cwnd_delta = (4.0 * (self.velocity.velocity as f64)
+                * self.config.max_datagram_size as f64
+                * self.theta
+                / (self.delta * (self.cwnd as f64))) as u64;
+
+            self.cwnd = if self.increase_cwnd {
+                self.cwnd.saturating_add(cwnd_delta)
+            } else {
+                self.cwnd.saturating_sub(cwnd_delta)
+            };
+
+            // set an appropriate value
+            if self.cwnd == 0 {
+                self.cwnd = self.config.min_cwnd;
+                self.velocity.velocity = 1;
+            }
+        }
+    }
 }
 
-impl Controller for Copa {
+impl Controller for Copap {
     fn on_sent(&mut self, now: Instant, bytes: u64, last_packet_number: u64) {
 
     }
@@ -360,9 +388,20 @@ impl Controller for Copa {
             self.increase_cwnd = self.target_rate >= current_rate;
         }
 
+        self.direction = self.queueing_delay > self.pre_queueing_delay;
+        if self.direction != self.pre_direction {
+            self.cnt += 1;
+        } else {
+            // do nothing ?
+            // self.cnt = 0;
+        }
+
+
         self.update_mode();
 
         self.update_velocity();
+
+        self.update_theta();
 
         self.update_cwnd();
 
@@ -410,7 +449,7 @@ impl Controller for Copa {
 
 /// Configuration for the `Copa` congestion controller
 #[derive(Debug, Clone)]
-pub struct CopaConfig {
+pub struct CopapConfig {
     /// Minimal congestion window in bytes.
     min_cwnd: u64,
 
@@ -434,11 +473,11 @@ pub struct CopaConfig {
     use_standing_rtt: bool,
 }
 
-impl CopaConfig {
+impl CopapConfig {
     
 }
 
-impl Default for CopaConfig {
+impl Default for CopapConfig {
     fn default() -> Self {
         Self {
             min_cwnd: 4 * DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
@@ -452,8 +491,8 @@ impl Default for CopaConfig {
     }
 }
 
-impl ControllerFactory for CopaConfig {
+impl ControllerFactory for CopapConfig {
     fn build(self: Arc<Self>, now: Instant, current_mtu: u16) -> Box<dyn Controller> {
-        Box::new(Copa::new(self, now, current_mtu))
+        Box::new(Copap::new(self, now, current_mtu))
     }
 }

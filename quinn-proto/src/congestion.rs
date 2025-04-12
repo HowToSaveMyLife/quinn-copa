@@ -10,12 +10,14 @@ mod cubic;
 mod new_reno;
 mod bbr2;
 mod copa;
+mod copap;
 
 pub use bbr::{Bbr, BbrConfig};
 pub use cubic::{Cubic, CubicConfig};
 pub use new_reno::{NewReno, NewRenoConfig};
 pub use  bbr2::{Bbr2, BbrConfig2};
 pub use copa::{Copa, CopaConfig};
+pub use copap::{Copap, CopapConfig};
 /// Common interface for different congestion controllers
 pub trait Controller: Send + Sync {
     /// One or more packets were just sent
