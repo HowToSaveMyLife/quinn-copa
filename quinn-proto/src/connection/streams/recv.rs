@@ -165,7 +165,7 @@ impl Recv {
             if offset != final_offset.into_inner() {
                 return Err(TransportError::FINAL_SIZE_ERROR("inconsistent value"));
             }
-        } else if self.end > final_offset.into() {
+        } else if self.end > <VarInt as Into<u64>>::into(final_offset) {
             return Err(TransportError::FINAL_SIZE_ERROR(
                 "lower than high water mark",
             ));

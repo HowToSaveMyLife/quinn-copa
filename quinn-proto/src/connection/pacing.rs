@@ -73,7 +73,7 @@ impl Pacer {
         }
 
         // we disable pacing for extremely large windows
-        if window > u32::MAX.into() {
+        if window > u32::MAX as u64 {
             return None;
         }
 
