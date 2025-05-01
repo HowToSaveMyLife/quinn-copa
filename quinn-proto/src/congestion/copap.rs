@@ -177,7 +177,7 @@ impl Copap {
 
     fn debug_info(&self) -> String {
         format!(
-            "rtt_standing: {:<10}, rtt_min: {:<12}, queueing_delay: {:<12}, cwnd: {:<10}, target_rate: {:<10}, increase_cwnd:{}, direction: {:<?} velocity: {:<10}, mode: {:<10?}, delta: {:<.3}, rtt_max: {:<10}\n",
+            "rtt_standing: {:<10}, rtt_min: {:<12}, queueing_delay: {:<12}, cwnd: {:<10}, target_rate: {:<10}, increase_cwnd:{}, direction: {:<?} velocity: {:<10}, mode: {:<10?}, cnt: {:<3}, delta: {:<.3}, rtt_max: {:<10}\n",
             self.rtt_standing.min_rtt().as_secs_f64(),
             self.rtt_min.min_rtt().as_secs_f64(),
             self.queueing_delay.as_secs_f64(),
@@ -187,6 +187,7 @@ impl Copap {
             self.velocity.direction,
             self.velocity.velocity,
             self.mode,
+            self.cnt,
             self.delta,
             self.rtt_max.max_rtt().as_secs_f64(),
         )
@@ -200,7 +201,7 @@ impl Copap {
             self.near_empty = true;
             self.delta = DEFAULT_DELTA;
             self.mode = CompetingMode::Default;
-        } else if self.cnt == 0 {
+        } else if self.cnt < 2 {
             self.delta = self.delta / (1 as f64 + self.delta);
             self.delta = self.delta.min(0.5);
             self.mode = CompetingMode::Competitive;
@@ -310,11 +311,11 @@ impl Copap {
         if self.slow_start {
             // Stay in slow start until the target rate is reached.
             if self.increase_cwnd {
-                self.cwnd *= 2;
+                self.cwnd = (self.cwnd as f64 * 1.2 as f64) as u64;
             }
         } else {
             // Not in slow start. Adjust cwnd.
-            let cwnd_delta = (4.0 * (self.velocity.velocity as f64)
+            let cwnd_delta = ((self.velocity.velocity as f64)
                 * self.config.max_datagram_size as f64
                 * self.theta
                 / (self.delta * (self.cwnd as f64))) as u64;
@@ -326,10 +327,7 @@ impl Copap {
             };
 
             // set an appropriate value
-            if self.cwnd == 0 {
-                self.cwnd = self.config.min_cwnd;
-                self.velocity.velocity = 1;
-            }
+            self.cwnd = self.cwnd.max(self.config.min_cwnd);
         }
     }
 }
@@ -391,11 +389,10 @@ impl Controller for Copap {
         self.direction = self.queueing_delay > self.pre_queueing_delay;
         if self.direction != self.pre_direction {
             self.cnt += 1;
-        } else {
-            // do nothing ?
-            // self.cnt = 0;
         }
 
+        self.pre_direction = self.direction;
+        self.pre_queueing_delay = self.queueing_delay;
 
         self.update_mode();
 
@@ -406,7 +403,7 @@ impl Controller for Copap {
         self.update_cwnd();
 
 
-        print!("rtt: {:<12}, current_rate: {:<12} , {}", rtt.latest().as_secs_f64(), current_rate, self.debug_info());
+        print!("time: {:<12}, rtt: {:<12}, current_rate: {:<12} , {}", now.duration_since(self.init_time).as_secs_f64(), rtt.latest().as_secs_f64(), current_rate, self.debug_info());
         // print!("time: {}, cwnd: {}, target_rate: {}, mode: {:?}\n", now.duration_since(self.init_time).as_secs_f64(), self.cwnd, self.target_rate, self.mode);
     }
 
